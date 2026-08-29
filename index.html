@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Budget Tracker</title>
+<style>
+  :root { --bg:#101418; --panel:#1a2027; --border:#2c3540; --text:#e9eef3; --muted:#8fa0b0; --green:#3fb68b; --red:#e5646e; --accent:#4a90d9; }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; padding: 24px; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .sub { color: var(--muted); margin-bottom: 20px; font-size: .9rem; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .panel h2 { font-size: 1rem; margin-bottom: 12px; }
+  form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  label { font-size: .8rem; color: var(--muted); display: block; margin-bottom: 4px; }
+  input, select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 10px; border-radius: 6px; }
+  button { background: var(--accent); color: #fff; border: none; padding: 9px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+  button.secondary { background: var(--panel); border: 1px solid var(--border); color: var(--text); font-weight: 400; }
+  button:hover { filter: brightness(1.15); }
+  .full { grid-column: 1 / -1; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+  .toolbar input[type=month] { width: auto; }
+  .stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 18px; min-width: 150px; }
+  .stat .label { color: var(--muted); font-size: .8rem; }
+  .stat .value { font-size: 1.3rem; font-weight: 700; margin-top: 2px; }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: .8rem; }
+  td.amount { text-align: right; font-variant-numeric: tabular-nums; }
+  td .del { background: none; border: none; color: var(--muted); cursor: pointer; }
+  td .del:hover { color: var(--red); }
+  canvas { width: 100%; height: auto; }
+  .empty { color: var(--muted); text-align: center; padding: 16px; }
+</style>
+</head>
+<body>
+  <h1>Budget Tracker</h1>
+  <p class="sub">Einnahmen und Ausgaben erfassen, pro Monat auswerten – alles lokal im Browser.</p>
+
+  <div class="toolbar">
+    <label style="margin:0">Monat&nbsp;</label>
+    <input type="month" id="monthPick">
+    <button class="secondary" id="exportBtn">CSV Export</button>
+    <button class="secondary" id="importBtn">CSV Import</button>
+    <input type="file" id="importFile" accept=".csv" hidden>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="label">Einnahmen</div><div class="value pos" id="sumIn">0.00</div></div>
+    <div class="stat"><div class="label">Ausgaben</div><div class="value neg" id="sumOut">0.00</div></div>
+    <div class="stat"><div class="label">Saldo</div><div class="value" id="saldo">0.00</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <h2>Neuer Eintrag</h2>
+      <form id="entryForm">
+        <div><label>Typ</label>
+          <select id="fType"><option value="out">Ausgabe</option><option value="in">Einnahme</option></select></div>
+        <div><label>Betrag (CHF)</label><input type="number" id="fAmount" step="0.05" min="0.01" required></div>
+        <div><label>Kategorie</label><input type="text" id="fCat" list="catList" placeholder="z. B. Essen" required><datalist id="catList"></datalist></div>
+        <div><label>Datum</label><input type="date" id="fDate" required></div>
+        <div class="full"><button type="submit" style="width:100%">Hinzufügen</button></div>
+      </form>
+
+      <h2 style="margin-top:20px">Ausgaben nach Kategorie</h2>
+      <canvas id="chart" width="520" height="280"></canvas>
+    </div>
+
+    <div class="panel">
+      <h2>Einträge <span id="monthLabel" style="color:var(--muted);font-weight:400"></span></h2>
+      <table>
+        <thead><tr><th>Datum</th><th>Kategorie</th><th style="text-align:right">Betrag</th><th></th></tr></thead>
+        <tbody id="entryRows"></tbody>
+      </table>
+      <div class="empty" id="emptyMsg" hidden>Keine Einträge in diesem Monat.</div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const STORAGE_KEY = "budget-tracker-v1";
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+// entry = { id, date: "YYYY-MM-DD", cat, amount: Number (signiert: + Einnahme, - Ausgabe) }
+let entries = load();
+
+function load() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) { const p = JSON.parse(raw); if (Array.isArray(p)) return p; }
+  } catch (e) { /* ignorieren */ }
+  return [];
+}
+function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(entries)); }
+
+const fmt = n => n.toLocaleString("de-CH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function currentMonth() { return document.getElementById("monthPick").value; } // "YYYY-MM"
+function monthEntries() {
+  const m = currentMonth();
+  return entries.filter(e => e.date.startsWith(m)).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function render() {
+  const list = monthEntries();
+  document.getElementById("monthLabel").textContent = "– " + currentMonth();
+
+  // Summen
+  const sumIn = list.filter(e => e.amount > 0).reduce((s, e) => s + e.amount, 0);
+  const sumOut = list.filter(e => e.amount < 0).reduce((s, e) => s - e.amount, 0);
+  const saldo = sumIn - sumOut;
+  document.getElementById("sumIn").textContent = fmt(sumIn);
+  document.getElementById("sumOut").textContent = fmt(sumOut);
+  const saldoEl = document.getElementById("saldo");
+  saldoEl.textContent = fmt(saldo);
+  saldoEl.className = "value " + (saldo >= 0 ? "pos" : "neg");
+
+  // Tabelle
+  const tbody = document.getElementById("entryRows");
+  tbody.innerHTML = "";
+  document.getElementById("emptyMsg").hidden = list.length > 0;
+  for (const e of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${e.date}</td><td></td>
+      <td class="amount ${e.amount >= 0 ? "pos" : "neg"}">${fmt(e.amount)}</td>
+      <td><button class="del" title="Löschen">✕</button></td>`;
+    tr.children[1].textContent = e.cat;
+    tr.querySelector(".del").addEventListener("click", () => {
+      entries = entries.filter(x => x.id !== e.id);
+      save(); render();
+    });
+    tbody.appendChild(tr);
+  }
+
+  // Kategorie-Vorschläge
+  const cats = [...new Set(entries.map(e => e.cat))].sort();
+  document.getElementById("catList").innerHTML = cats.map(c => `<option value="${c.replace(/"/g, "&quot;")}">`).join("");
+
+  drawChart(list);
+}
+
+// Balken-Chart: Ausgaben je Kategorie, selbst gezeichnet
+function drawChart(list) {
+  const canvas = document.getElementById("chart");
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const byCat = {};
+  for (const e of list) if (e.amount < 0) byCat[e.cat] = (byCat[e.cat] || 0) - e.amount;
+  const cats = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (cats.length === 0) {
+    ctx.fillStyle = "#8fa0b0"; ctx.font = "14px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("Keine Ausgaben in diesem Monat", canvas.width / 2, canvas.height / 2);
+    return;
+  }
+
+  const colors = ["#4a90d9", "#3fb68b", "#e5646e", "#e2b93b", "#9a6fd0", "#4ec3d4", "#d98a4a", "#7a8a99"];
+  const max = Math.max(...cats.map(c => c[1]));
+  const pad = 10, labelW = 110, barH = 24, gap = 10;
+  cats.forEach(([cat, val], i) => {
+    const y = pad + i * (barH + gap);
+    ctx.fillStyle = "#e9eef3"; ctx.font = "12px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText(cat.length > 14 ? cat.slice(0, 13) + "…" : cat, labelW - 6, y + barH / 2 + 4);
+    const w = Math.max(2, (canvas.width - labelW - 80) * (val / max));
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.fillRect(labelW, y, w, barH);
+    ctx.fillStyle = "#8fa0b0"; ctx.textAlign = "left";
+    ctx.fillText(fmt(val), labelW + w + 6, y + barH / 2 + 4);
+  });
+}
+
+// --- Formular ---
+document.getElementById("entryForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const type = document.getElementById("fType").value;
+  const raw = parseFloat(document.getElementById("fAmount").value);
+  const cat = document.getElementById("fCat").value.trim();
+  const date = document.getElementById("fDate").value;
+  if (!raw || raw <= 0 || !cat || !date) return;
+  entries.push({ id: uid(), date, cat, amount: type === "in" ? raw : -raw });
+  save();
+  document.getElementById("fAmount").value = "";
+  document.getElementById("fCat").value = "";
+  render();
+});
+
+// --- CSV (Format: Datum,Kategorie,Betrag — Betrag signiert, + Einnahme / - Ausgabe) ---
+document.getElementById("exportBtn").addEventListener("click", () => {
+  const lines = ["Datum,Kategorie,Betrag"];
+  for (const e of [...entries].sort((a, b) => a.date.localeCompare(b.date))) {
+    const cat = /[",]/.test(e.cat) ? '"' + e.cat.replace(/"/g, '""') + '"' : e.cat;
+    lines.push(`${e.date},${cat},${e.amount.toFixed(2)}`);
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "budget-export.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+document.getElementById("importBtn").addEventListener("click", () => document.getElementById("importFile").click());
+document.getElementById("importFile").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const lines = String(reader.result).split(/\r?\n/).filter(l => l.trim());
+      let imported = 0;
+      for (const line of lines) {
+        const parts = parseCsvLine(line);
+        if (parts.length < 3) continue;
+        const [date, cat, amountStr] = parts;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue; // Header/ungültige Zeilen überspringen
+        const amount = parseFloat(amountStr);
+        if (isNaN(amount) || !cat) continue;
+        entries.push({ id: uid(), date, cat, amount });
+        imported++;
+      }
+      save(); render();
+      alert(imported + " Einträge importiert.");
+    } catch (err) { alert("Import fehlgeschlagen: " + err.message); }
+  };
+  reader.readAsText(file);
+  e.target.value = "";
+});
+
+// Minimaler CSV-Parser mit Anführungszeichen-Unterstützung
+function parseCsvLine(line) {
+  const out = []; let cur = ""; let inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQ) {
+      if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else cur += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ",") { out.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+// --- Init ---
+const now = new Date();
+document.getElementById("monthPick").value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+document.getElementById("fDate").value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+document.getElementById("monthPick").addEventListener("change", render);
+render();
+</script>
+</body>
+</html>
