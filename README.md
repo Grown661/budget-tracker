@@ -1,5 +1,7 @@
 # Budget Tracker
 
+**Live-Demo:** https://grown661.github.io/budget-tracker/
+
 Wer nicht weiss, wohin das Geld geht, kann nicht sparen – dieser Tracker erfasst Einnahmen und Ausgaben pro Monat und zeigt sofort Saldo und Kategorien-Verteilung.
 
 ## Features
